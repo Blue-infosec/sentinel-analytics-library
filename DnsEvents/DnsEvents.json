@@ -1,0 +1,52 @@
+{
+    "analytics": [
+        {
+            "displayName": "Rare high NXDomain count",
+            "severity": "Medium",
+            "enabled": "true",
+            "query": "\nlet nxDomainDnsEvents = DnsEvents \n| where ResultCode == \"3\" \n| where QueryType in (\"A\", \"AAAA\")\n| where ClientIP != \"127.0.0.1\"\n| where Name !contains \"/\"\n| where Name contains \".\";\nnxDomainDnsEvents\n| where TimeGenerated > ago(1d)\n| extend sld = tostring(split(Name, \".\")[-2])\n| summarize StartTimeUtc = min(TimeGenerated), EndTimeUtc = max(TimeGenerated), dcount(sld) by ClientIP\n| where dcount_sld > 100\n// Filter out previously seen IPs\n| join kind=leftanti (nxDomainDnsEvents\n    | where TimeGenerated between(ago(10d)..ago(1d))\n    | extend sld = tostring(split(Name, \".\")[-2])\n    | summarize dcount(sld) by ClientIP\n    | where dcount_sld > 100 ) on ClientIP\n// Pull out sample NXDomain responses for those remaining potentially infected IPs\n| join kind = inner (nxDomainDnsEvents | summarize by Name, ClientIP) on ClientIP\n| summarize StartTimeUtc = min(StartTimeUtc), EndTimeUtc = max(EndTimeUtc), sampleNXDomainList=makelist(Name, 100)  by ClientIP, dcount_sld\n| extend timestamp = StartTimeUtc, IPCustomEntity = ClientIP",
+            "queryFrequency": "1d",
+            "queryPeriod": "10d",
+            "triggerOperator": "gt",
+            "triggerThreshold": "0",
+            "suppressionDuration": "6H",
+            "suppressionEnabled": "false"
+        },
+        {
+            "displayName": "Rare high reverse DNS count",
+            "severity": "Medium",
+            "enabled": "true",
+            "query": "\nDnsEvents \n| where TimeGenerated > ago(1d)\n| where Name contains \"in-addr.arpa\" \n| summarize StartTimeUtc = min(TimeGenerated), EndTimeUtc = max(TimeGenerated), dcount(Name) by ClientIP\n| where dcount_Name >10\n| project StartTimeUtc, EndTimeUtc, ClientIP , dcount_Name \n| join kind=leftanti (DnsEvents \n    | where TimeGenerated between(ago(8d)..ago(1d))\n    | where Name contains \"in-addr.arpa\" \n    | summarize dcount(Name) by ClientIP, bin(TimeGenerated, 1d)\n    | where dcount_Name >10\n    | project ClientIP , dcount_Name \n) on ClientIP\n| extend timestamp = StartTimeUtc, IPCustomEntity = ClientIP\n",
+            "queryFrequency": "1d",
+            "queryPeriod": "8d",
+            "triggerOperator": "gt",
+            "triggerThreshold": "0",
+            "suppressionDuration": "6H",
+            "suppressionEnabled": "false"
+        },
+        {
+            "displayName": "DNS events related to mining pools",
+            "severity": "Low",
+            "enabled": "true",
+            "query": "\nDnsEvents\n| where TimeGenerated > ago(1d)\n| where Name contains \".\"\n| where Name contains \"monerohash.com\"\nor Name contains \"do-dear.com\"\nor Name contains \"xmrminerpro.com\"\nor Name contains \"secumine.net\"\nor Name contains \"xmrpool.com\"\nor Name contains \"minexmr.org\"\nor Name contains \"hashanywhere.com\"\nor Name contains \"xmrget.com\"\nor Name contains \"mininglottery.eu\"\nor Name contains \"minergate.com\"\nor Name contains \"moriaxmr.com\"\nor Name contains \"multipooler.com\"\nor Name contains \"moneropools.com\"\nor Name contains \"xmrpool.eu\"\nor Name contains \"coolmining.club\"\nor Name contains \"supportxmr.com\"\nor Name contains \"minexmr.com\"\nor Name contains \"hashvault.pro\"\nor Name contains \"xmrpool.net\"\nor Name contains \"crypto-pool.fr\"\nor Name contains \"xmr.pt\"\nor Name contains \"miner.rocks\"\nor Name contains \"walpool.com\"\nor Name contains \"herominers.com\"\nor Name contains \"gntl.co.uk\"\nor Name contains \"semipool.com\"\nor Name contains \"coinfoundry.org\"\nor Name contains \"cryptoknight.cc\"\nor Name contains \"fairhash.org\"\nor Name contains \"baikalmine.com\"\nor Name contains \"tubepool.xyz\"\nor Name contains \"fairpool.xyz\"\nor Name contains \"asiapool.io\"\nor Name contains \"coinpoolit.webhop.me\"\nor Name contains \"nanopool.org\"\nor Name contains \"moneropool.com\"\nor Name contains \"miner.center\"\nor Name contains \"prohash.net\"\nor Name contains \"poolto.be\"\nor Name contains \"cryptoescrow.eu\"\nor Name contains \"monerominers.net\"\nor Name contains \"cryptonotepool.org\"\nor Name contains \"extrmepool.org\"\nor Name contains \"webcoin.me\"\nor Name contains \"kippo.eu\"\nor Name contains \"hashinvest.ws\"\nor Name contains \"monero.farm\"\nor Name contains \"supportxmr.com\"\nor Name contains \"xmrpool.eu\"\nor Name contains \"linux-repository-updates.com\"\nor Name contains \"1gh.com\"\nor Name contains \"dwarfpool.com\"\nor Name contains \"hash-to-coins.com\"\nor Name contains \"hashvault.pro\"\nor Name contains \"pool-proxy.com\"\nor Name contains \"hashfor.cash\"\nor Name contains \"fairpool.cloud\"\nor Name contains \"litecoinpool.org\"\nor Name contains \"mineshaft.ml\"\nor Name contains \"abcxyz.stream\"\nor Name contains \"moneropool.ru\"\nor Name contains \"cryptonotepool.org.uk\"\nor Name contains \"extremepool.org\"\nor Name contains \"extremehash.com\"\nor Name contains \"hashinvest.net\"\nor Name contains \"unipool.pro\"\nor Name contains \"crypto-pools.org\"\nor Name contains \"monero.net\"\nor Name contains \"backup-pool.com\"\nor Name contains \"mooo.com\"\nor Name contains \"freeyy.me\"\nor Name contains \"cryptonight.net\"\nor Name contains \"shscrypto.net\"\n| extend timestamp = TimeGenerated, IPCustomEntity = ClientIP, HostCustomEntity = Computer\n",
+            "queryFrequency": "1d",
+            "queryPeriod": "1d",
+            "triggerOperator": "gt",
+            "triggerThreshold": "0",
+            "suppressionDuration": "6H",
+            "suppressionEnabled": "false"
+        },
+        {
+            "displayName": "DNS tor proxies",
+            "severity": "Low",
+            "enabled": "true",
+            "query": "\nDnsEvents\n| where TimeGenerated > ago(1d)\n| where Name contains \".\"\n| where Name contains \"tor2web.org\"\nor Name contains \"tor2web.com\"\nor Name contains \"torlink.co\"\nor Name contains \"onion.to\"\nor Name contains \"onion.ink\"\nor Name contains \"onion.cab\"\nor Name contains \"onion.nu\"\nor Name contains \"onion.link\"\nor Name contains \"onion.it\"\nor Name contains \"onion.city\"\nor Name contains \"onion.direct\"\nor Name contains \"onion.top\"\nor Name contains \"onion.casa\"\nor Name contains \"onion.plus\"\nor Name contains \"onion.rip\"\nor Name contains \"onion.dog\"\nor Name contains \"tor2web.fi\"\nor Name contains \"tor2web.blutmagie.de\"\nor Name contains \"onion.sh\"\nor Name contains \"onion.lu\"\nor Name contains \"onion.pet\"\nor Name contains \"t2w.pw\"\nor Name contains \"tor2web.ae.org\"\nor Name contains \"tor2web.io\"\nor Name contains \"tor2web.xyz\"\nor Name contains \"onion.lt\"\nor Name contains \"s1.tor-gateways.de\"\nor Name contains \"s2.tor-gateways.de\"\nor Name contains \"s3.tor-gateways.de\"\nor Name contains \"s4.tor-gateways.de\"\nor Name contains \"s5.tor-gateways.de\"\nor Name contains \"hiddenservice.net\"\n| extend timestamp = TimeGenerated, IPCustomEntity = ClientIP, HostCustomEntity = Computer\n",
+            "queryFrequency": "1d",
+            "queryPeriod": "1d",
+            "triggerOperator": "gt",
+            "triggerThreshold": "0",
+            "suppressionDuration": "6H",
+            "suppressionEnabled": "false"
+        }
+    ]
+}

@@ -1,0 +1,88 @@
+{
+    "analytics": [
+        {
+            "displayName": "Changes to internet facing AWS RDS Database instances",
+            "severity": "Low",
+            "enabled": "true",
+            "query": "\nlet timeframe = 1d;\nAWSCloudTrail\n| where TimeGenerated >= ago(timeframe)\n| where EventName == \"AuthorizeDBSecurityGroupIngress\"\n    or EventName == \"CreateDBSecurityGroup\"\n    or EventName == \"DeleteDBSecurityGroup\"\n    or EventName == \"RevokeDBSecurityGroupIngress\"\n| project TimeGenerated, EventName, EventTypeName, UserIdentityAccountId, UserIdentityPrincipalid, UserAgent, UserIdentityUserName, SessionMfaAuthenticated, SourceIpAddress, AWSRegion, EventSource, AdditionalEventData, ResponseElements\n| extend timestamp = TimeGenerated, AccountCustomEntity = UserIdentityUserName, IPCustomEntity = SourceIpAddress",
+            "queryFrequency": "1d",
+            "queryPeriod": "1d",
+            "triggerOperator": "gt",
+            "triggerThreshold": "0",
+            "suppressionDuration": "6H",
+            "suppressionEnabled": "false"
+        },
+        {
+            "displayName": "Changes to Amazon VPC settings",
+            "severity": "Low",
+            "enabled": "true",
+            "query": "\nlet timeframe = 1d;\nAWSCloudTrail\n| where TimeGenerated >= ago(timeframe)\n| where EventName == \"CreateNetworkAclEntry\"\n    or EventName == \"CreateRoute\"\n| project TimeGenerated, EventName, EventTypeName, UserIdentityAccountId, UserIdentityPrincipalid, UserAgent, \nUserIdentityUserName, SessionMfaAuthenticated, SourceIpAddress, AWSRegion, EventSource, AdditionalEventData, ResponseElements\n| extend timestamp = TimeGenerated, AccountCustomEntity = UserIdentityUserName, IPCustomEntity = SourceIpAddress",
+            "queryFrequency": "1d",
+            "queryPeriod": "1d",
+            "triggerOperator": "gt",
+            "triggerThreshold": "0",
+            "suppressionDuration": "6H",
+            "suppressionEnabled": "false"
+        },
+        {
+            "displayName": "Changes made to AWS CloudTrail logs",
+            "severity": "Low",
+            "enabled": "true",
+            "query": "\nlet timeframe = 1d;\nAWSCloudTrail\n| where TimeGenerated >= ago(timeframe)\n| where EventName == \"UpdateTrail\" or EventName == \"DeleteTrail\" or EventName == \"StopLogging\"\n| project TimeGenerated, EventName, EventTypeName, UserIdentityAccountId, UserIdentityPrincipalid, UserAgent, \nUserIdentityUserName, SessionMfaAuthenticated, SourceIpAddress, AWSRegion, EventSource\n| extend timestamp = TimeGenerated, AccountCustomEntity = UserIdentityUserName, IPCustomEntity = SourceIpAddress",
+            "queryFrequency": "1d",
+            "queryPeriod": "1d",
+            "triggerOperator": "gt",
+            "triggerThreshold": "0",
+            "suppressionDuration": "6H",
+            "suppressionEnabled": "false"
+        },
+        {
+            "displayName": "Login to AWS Management Console without MFA",
+            "severity": "Low",
+            "enabled": "true",
+            "query": "\nlet timeframe = 1d;\nAWSCloudTrail\n| where TimeGenerated >= ago(timeframe)\n| where EventName == \"ConsoleLogin\" \n| extend AdditionalData = todynamic(AdditionalEventData)\n| extend MFAUsed = AdditionalData[\"MFAUsed\"]\n| extend RElements = todynamic(ResponseElements)\n| extend CLogin = RElements[\"ConsoleLogin\"]\n| where MFAUsed != \"Yes\"\n| where CLogin != \"Failure\"\n| project TimeGenerated, EventName, EventTypeName, CLogin, MFAUsed, UserIdentityAccountId,  UserIdentityPrincipalid, UserAgent, \nUserIdentityUserName, SessionMfaAuthenticated, SourceIpAddress, AWSRegion, AdditionalData, RElements\n| extend timestamp = TimeGenerated, AccountCustomEntity = UserIdentityUserName, IPCustomEntity = SourceIpAddress",
+            "queryFrequency": "1d",
+            "queryPeriod": "1d",
+            "triggerOperator": "gt",
+            "triggerThreshold": "0",
+            "suppressionDuration": "6H",
+            "suppressionEnabled": "false"
+        },
+        {
+            "displayName": "Monitor AWS Credential abuse or hijacking",
+            "severity": "Low",
+            "enabled": "true",
+            "query": "\nlet timeframe = 1d;\nAWSCloudTrail\n| where TimeGenerated >= ago(timeframe)\n| where EventName == \"GetCallerIdentity\"\n| where UserIdentityType == \"AssumedRole\" \n| summarize by SourceIpAddress, TimeGenerated, EventName, EventTypeName, UserIdentityType, UserIdentityAccountId, UserIdentityPrincipalid, \nUserAgent, UserIdentityUserName, SessionMfaAuthenticated,AWSRegion, EventSource, AdditionalEventData, ResponseElements\n| extend timestamp = TimeGenerated, AccountCustomEntity = UserIdentityUserName, IPCustomEntity = SourceIpAddress\n| sort by TimeGenerated desc nulls last ",
+            "queryFrequency": "1d",
+            "queryPeriod": "1d",
+            "triggerOperator": "gt",
+            "triggerThreshold": "0",
+            "suppressionDuration": "6H",
+            "suppressionEnabled": "false"
+        },
+        {
+            "displayName": "Changes to AWS Security Group ingress and egress settings",
+            "severity": "Low",
+            "enabled": "true",
+            "query": "\nlet timeframe = 1d;\nAWSCloudTrail\n| where TimeGenerated >= ago(timeframe)\n| where EventName == \"AuthorizeSecurityGroupEgress\"\n     or EventName == \"AuthorizeSecurityGroupIngress\"\n     or EventName == \"RevokeSecurityGroupEgress\"\n     or EventName == \"RevokeSecurityGroupIngress\"\n| project TimeGenerated, EventName, EventTypeName, UserIdentityAccountId, UserIdentityPrincipalid, UserAgent, \nUserIdentityUserName, SessionMfaAuthenticated, SourceIpAddress, AWSRegion, EventSource, AdditionalEventData, ResponseElements\n| extend timestamp = TimeGenerated, AccountCustomEntity = UserIdentityUserName, IPCustomEntity = SourceIpAddress\n",
+            "queryFrequency": "1d",
+            "queryPeriod": "1d",
+            "triggerOperator": "gt",
+            "triggerThreshold": "0",
+            "suppressionDuration": "6H",
+            "suppressionEnabled": "false"
+        },
+        {
+            "displayName": "Changes to AWS Elastic Load Balancer security groups",
+            "severity": "Low",
+            "enabled": "true",
+            "query": "\nlet timeframe = 1d;\nAWSCloudTrail\n| where TimeGenerated >= ago(timeframe)\n| where EventName == \"ApplySecurityGroupsToLoadBalancer\"\n     or EventName == \"SetSecurityGroups\"\n| project TimeGenerated, EventName, EventTypeName, UserIdentityAccountId, UserIdentityPrincipalid, UserAgent, \nUserIdentityUserName, SessionMfaAuthenticated, SourceIpAddress, AWSRegion, EventSource, AdditionalEventData, ResponseElements\n| extend timestamp = TimeGenerated, AccountCustomEntity = UserIdentityUserName, IPCustomEntity = SourceIpAddress",
+            "queryFrequency": "1d",
+            "queryPeriod": "1d",
+            "triggerOperator": "gt",
+            "triggerThreshold": "0",
+            "suppressionDuration": "6H",
+            "suppressionEnabled": "false"
+        }
+    ]
+}

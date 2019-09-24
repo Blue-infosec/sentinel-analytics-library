@@ -1,0 +1,52 @@
+{
+    "analytics": [
+        {
+            "displayName": "Suspicious number of resource creation or deployment activities",
+            "severity": "Medium",
+            "enabled": "true",
+            "query": "\nAzureActivity\n| where TimeGenerated >= startofday(ago(7d))\n| where OperationName == \"Create or Update Virtual Machine\" or OperationName == \"Create Deployment\"\n| where ActivityStatus == \"Succeeded\"\n| make-series dResourceCount=dcount(ResourceId)  default=0 on EventSubmissionTimestamp in range(startofday(ago(7d)), now(), 1d) by Caller\n| extend (RSquare,Slope,Variance,RVariance,Interception,LineFit)=series_fit_line(dResourceCount)\n| where Slope > 0.2\n| join kind=leftsemi (\n// Last day's activity is anomalous\nAzureActivity\n| where TimeGenerated >= startofday(ago(1d))\n| where OperationName == \"Create or Update Virtual Machine\" or OperationName == \"Create Deployment\"\n| where ActivityStatus == \"Succeeded\"\n| make-series dResourceCount=dcount(ResourceId)  default=0 on EventSubmissionTimestamp in range(startofday(ago(1d)), now(), 1d) by Caller\n| extend (RSquare,Slope,Variance,RVariance,Interception,LineFit)=series_fit_line(dResourceCount)\n| where Slope >0.2    \n) on Caller",
+            "queryFrequency": "1d",
+            "queryPeriod": "7d",
+            "triggerOperator": "gt",
+            "triggerThreshold": "0",
+            "suppressionDuration": "6H",
+            "suppressionEnabled": "false"
+        },
+        {
+            "displayName": "Suspicious granting of permissions to an account",
+            "severity": "Medium",
+            "enabled": "true",
+            "query": "\nlet createRoleAssignmentActivity = AzureActivity\n| where OperationName == \"Create role assignment\"\n| where ActivityStatus == \"Succeeded\"\n| project TimeGenerated, EventSubmissionTimestamp, Caller, CallerIpAddress, SubscriptionId, ResourceId, OperationName;\n// The number of operations below which an IP address is considered an unusual source of role assignment operations\nlet alertOperationThreshold = 5;\ncreateRoleAssignmentActivity \n| where TimeGenerated >= ago(14d)\n| summarize count() by CallerIpAddress\n| where count_ <= alertOperationThreshold\n| join kind = rightsemi ( createRoleAssignmentActivity\n| where TimeGenerated >= ago(1d)\n) on CallerIpAddress\n| extend timestamp = TimeGenerated, AccountCustomEntity = Caller, IPCustomEntity = CallerIpAddress",
+            "queryFrequency": "1d",
+            "queryPeriod": "14d",
+            "triggerOperator": "gt",
+            "triggerThreshold": "0",
+            "suppressionDuration": "6H",
+            "suppressionEnabled": "false"
+        },
+        {
+            "displayName": "Suspicious Resource deployment",
+            "severity": "Low",
+            "enabled": "true",
+            "query": "\nAzureActivity\n| where TimeGenerated between (ago(7d) .. ago(1d))\n| where OperationName =~ \"Create or Update Virtual Machine\" or OperationName =~ \"Create Deployment\" \n| where ActivityStatus =~ \"Succeeded\" \n| project Resource, ResourceGroup, Caller, OperationName, CallerIpAddress\n| evaluate basket()\n| join kind=rightantisemi (\nAzureActivity\n| where TimeGenerated >ago(1d)\n| where OperationName =~ \"Create or Update Virtual Machine\" or OperationName =~ \"Create Deployment\" \n| where ActivityStatus =~ \"Succeeded\" \n| project TimeGenerated, Resource, ResourceGroup, Caller, OperationName, CallerIpAddress \n) on ResourceGroup \n| summarize StartTimeUtc = min(TimeGenerated), EndTimeUtc = max(TimeGenerated), CreateCount = count() by Caller, CallerIpAddress, Resource, ResourceGroup, OperationName\n| extend timestamp = StartTimeUtc, AccountCustomEntity = Caller, IPCustomEntity = CallerIpAddress\n| sort by CreateCount desc nulls last \n",
+            "queryFrequency": "1d",
+            "queryPeriod": "7d",
+            "triggerOperator": "gt",
+            "triggerThreshold": "0",
+            "suppressionDuration": "6H",
+            "suppressionEnabled": "false"
+        },
+        {
+            "displayName": "Rare subscription-level operations in Azure",
+            "severity": "Low",
+            "enabled": "true",
+            "query": "\nlet timeframe = 1d;\nlet SensitiveOperationList = dynamic(\n[\"List keys\", \"List Storage Account Keys\", \"Register Subscription\", \"Create or Update Snapshot\", \"Create or Update Network Security Group\"]);\nAzureActivity\n| where TimeGenerated >= ago(timeframe)\n| where ActivityStatus =~ \"Succeeded\"\n| where OperationName in~ (SensitiveOperationList)\n| project TimeGenerated, OperationName, ActivityStatus, Resource, Caller, CallerIpAddress, ResourceGroup, SubscriptionId, Authorization\n| extend timestamp = TimeGenerated, AccountCustomEntity = Caller, IPCustomEntity = CallerIpAddress\n",
+            "queryFrequency": "1d",
+            "queryPeriod": "1d",
+            "triggerOperator": "gt",
+            "triggerThreshold": "0",
+            "suppressionDuration": "6H",
+            "suppressionEnabled": "false"
+        }
+    ]
+}

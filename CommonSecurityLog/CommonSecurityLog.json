@@ -1,0 +1,64 @@
+{
+    "analytics": [
+        {
+            "displayName": "Cisco ASA - average attack detection rate increase",
+            "severity": "Low",
+            "enabled": "true",
+            "query": "\nlet timeframe = 1h;\nlet last1h = CommonSecurityLog \n| where TimeGenerated >= ago(timeframe)\n| where isempty(CommunicationDirection) \n| where DeviceEventClassID == \"733100\"\n| extend SourceOfDropRateCount = tostring(split(tostring(split(Message, \"]\")[0]),\"[ \")[1])\n| extend splitMessage = split(Message, \".\")\n| extend DropRate = tostring(split(tostring(splitMessage[0]),\"] \")[1])\n| extend CurrentBurstRate = split(tostring(split(tostring(splitMessage[1]),\"  \")[0]),\"is \")\n| extend CurrentBurstRatePerSec = toint(split(tostring(CurrentBurstRate[1]),\" \")[0])\n| extend MaxConfiguredBurstRate = toint(CurrentBurstRate[2])\n| extend CurrentAvgRate = split(tostring(split(tostring(splitMessage[1]),\"  \")[1]),\"is \")\n| extend CurrentAvgRatePerSec = toint(split(tostring(CurrentAvgRate[1]),\" \")[0])\n| extend MaxConfiguredAvgRate = toint(CurrentAvgRate[2])\n| extend CumulativeTotal = toint(split(tostring(split(tostring(splitMessage[1]),\"  \")[2]),\"is \")[1])\n| summarize last1hCumTotal = sum(CumulativeTotal), last1hAvgRatePerSec = avg(CurrentAvgRatePerSec), last1hAvgBurstRatePerSec = avg(CurrentBurstRatePerSec) by DeviceName, DeviceEventClassID, SourceIP, SourceOfDropRateCount, DropRate;\nlet prev6h = CommonSecurityLog \n| where TimeGenerated between (ago(6h) .. ago(1h))\n| where isempty(CommunicationDirection) \n| where DeviceEventClassID == \"733100\"\n| extend SourceOfDropRateCount = tostring(split(tostring(split(Message, \"]\")[0]),\"[ \")[1])\n| extend splitMessage = split(Message, \".\")\n| extend DropRate = tostring(split(tostring(splitMessage[0]),\"] \")[1])\n| extend CurrentBurstRate = split(tostring(split(tostring(splitMessage[1]),\"  \")[0]),\"is \")\n| extend prevCurrentBurstRatePerSec = toint(split(tostring(CurrentBurstRate[1]),\" \")[0])\n| extend prevMaxConfiguredBurstRate = toint(CurrentBurstRate[2])\n| extend CurrentAvgRate = split(tostring(split(tostring(splitMessage[1]),\"  \")[1]),\"is \")\n| extend prevCurrentAvgRatePerSec = toint(split(tostring(CurrentAvgRate[1]),\" \")[0])\n| extend prevMaxConfiguredAvgRate = toint(CurrentAvgRate[2])\n| extend prevCumulativeTotal = toint(split(tostring(split(tostring(splitMessage[1]),\"  \")[2]),\"is \")[1])\n| summarize StartTimeUtc = min(TimeGenerated), EndTimeUtc = max(TimeGenerated), prev6hCumTotal = sum(prevCumulativeTotal), prev6hAvgRatePerSec = avg(prevCurrentAvgRatePerSec), prev6hAvgBurstRatePerSec = avg(prevCurrentBurstRatePerSec) \nby DeviceName, DeviceEventClassID, SourceIP, SourceOfDropRateCount, DropRate;\nlast1h | join (\n  prev6h \n) on DeviceName, DeviceEventClassID, SourceIP, SourceOfDropRateCount, DropRate\n| project StartTimeUtc, EndTimeUtc, DeviceName, DeviceEventClassID, SourceIP, SourceOfDropRateCount, DropRate, last1hCumTotal, prev6hCumTotal, prev6hAvgCumTotal = prev6hCumTotal/6, last1hAvgRatePerSec, prev6hAvgRatePerSec, last1hAvgBurstRatePerSec, prev6hAvgBurstRatePerSec\n// Select only events that indicate a doubling of the expected rate in the last hour over the previous 6 hours\n| where last1hCumTotal > 2*prev6hAvgCumTotal or last1hAvgRatePerSec > 2*prev6hAvgRatePerSec or last1hAvgBurstRatePerSec > 2*prev6hAvgBurstRatePerSec\n| extend timestamp = StartTimeUtc, IPCustomEntity = SourceIP, HostCustomEntity = DeviceName\n",
+            "queryFrequency": "1h",
+            "queryPeriod": "6h",
+            "triggerOperator": "gt",
+            "triggerThreshold": "0",
+            "suppressionDuration": "6H",
+            "suppressionEnabled": "false"
+        },
+        {
+            "displayName": "Cisco ASA - threat detection message fired",
+            "severity": "Medium",
+            "enabled": "true",
+            "query": "\nlet timeframe = 1h;\nCommonSecurityLog \n| where TimeGenerated >= ago(timeframe)\n| where isempty(CommunicationDirection) \n| where DeviceEventClassID in (\"733101\",\"733102\",\"733103\",\"733104\",\"733105\")\n| extend timestamp = TimeGenerated, IPCustomEntity = SourceIP, HostCustomEntity = DeviceName\n",
+            "queryFrequency": "1h",
+            "queryPeriod": "1h",
+            "triggerOperator": "gt",
+            "triggerThreshold": "0",
+            "suppressionDuration": "6H",
+            "suppressionEnabled": "false"
+        },
+        {
+            "displayName": "Palo Alto - potential beaconing detected",
+            "severity": "Low",
+            "enabled": "true",
+            "query": "\nlet starttime = 2d;\nlet endtime = 1d;\nlet TimeDeltaThreshold = 10;\nlet TotalEventsThreshold = 15;\nlet PercentBeaconThreshold = 80;\nlet PrivateIPregex = @'^127\\.|^10\\.|^172\\.1[6-9]\\.|^172\\.2[0-9]\\.|^172\\.3[0-1]\\.|^192\\.168\\.';\nCommonSecurityLog\n| where DeviceVendor == \"Palo Alto Networks\" and Activity == \"TRAFFIC\"\n| where TimeGenerated between (ago(starttime)..ago(endtime))\n| extend DestinationIPType = iff(DestinationIP matches regex PrivateIPregex,\"private\" ,\"public\" )\n| where DestinationIPType == \"public\"\n| project TimeGenerated, DeviceName, SourceUserID, SourceIP, SourcePort, DestinationIP, DestinationPort, ReceivedBytes, SentBytes\n| sort by SourceIP asc,TimeGenerated asc, DestinationIP asc, DestinationPort asc\n| serialize\n| extend nextTimeGenerated = next(TimeGenerated, 1), nextSourceIP = next(SourceIP, 1)\n| extend TimeDeltainSeconds = datetime_diff('second',nextTimeGenerated,TimeGenerated)\n| where SourceIP == nextSourceIP\n//Whitelisting criteria/ threshold criteria\n| where TimeDeltainSeconds > TimeDeltaThreshold \n| project TimeGenerated, TimeDeltainSeconds, DeviceName, SourceUserID, SourceIP, SourcePort, DestinationIP, DestinationPort, ReceivedBytes, SentBytes\n| summarize count(), sum(ReceivedBytes), sum(SentBytes), make_list(TimeDeltainSeconds) \nby TimeDeltainSeconds, bin(TimeGenerated, 1h), DeviceName, SourceUserID, SourceIP, DestinationIP, DestinationPort\n| summarize (MostFrequentTimeDeltaCount, MostFrequentTimeDeltainSeconds) = arg_max(count_, TimeDeltainSeconds), TotalEvents=sum(count_), TotalSentBytes = sum(sum_SentBytes), TotalReceivedBytes = sum(sum_ReceivedBytes) \nby bin(TimeGenerated, 1h), DeviceName, SourceUserID, SourceIP, DestinationIP, DestinationPort\n| where TotalEvents > TotalEventsThreshold \n| extend BeaconPercent = MostFrequentTimeDeltaCount/toreal(TotalEvents) * 100\n| where BeaconPercent > PercentBeaconThreshold\n| extend timestamp = TimeGenerated, IPCustomEntity = DestinationIP, AccountCustomEntity = SourceUserID, HostCustomEntity = DeviceName ",
+            "queryFrequency": "1d",
+            "queryPeriod": "1d",
+            "triggerOperator": "gt",
+            "triggerThreshold": "0",
+            "suppressionDuration": "6H",
+            "suppressionEnabled": "false"
+        },
+        {
+            "displayName": "Palo Alto - possible internal to external port scanning",
+            "severity": "Low",
+            "enabled": "true",
+            "query": "\nlet timeframe = 1h;\nCommonSecurityLog \n| where TimeGenerated > ago(timeframe) \n| where isnotempty(DestinationPort) and DeviceAction !in (\"reset-both\", \"deny\") \n// filter out common usage ports. Add ports that are legitimate for your environment\n| where DestinationPort !in (\"443\", \"53\", \"389\", \"80\", \"0\", \"880\", \"8888\", \"8080\")\n| where ApplicationProtocol == \"incomplete\" \n// filter out IANA ephemeral or negotiated ports as per https://en.wikipedia.org/wiki/Ephemeral_port\n| where DestinationPort !between (toint(49512) .. toint(65535)) \n| where Computer != \"\" \n| where DestinationIP !startswith \"10.\"\n// Filter out any graceful reset reasons of AGED OUT which occurs when a TCP session closes with a FIN due to aging out. \n| where AdditionalExtensions !has \"reason=aged-out\" \n// Filter out any TCP FIN which occurs when a TCP FIN is used to gracefully close half or both sides of a connection.\n| where AdditionalExtensions !has \"reason=tcp-fin\" \n// Uncomment one of the following where clauses to trigger on specific TCP reset reasons\n// See Palo Alto article for details - https://knowledgebase.paloaltonetworks.com/KCSArticleDetail?id=kA10g000000ClUvCAK\n// TCP RST-server - Occurs when the server sends a TCP reset to the client\n// | where AdditionalExtensions has \"reason=tcp-rst-from-server\"  \n// TCP RST-client - Occurs when the client sends a TCP reset to the server\n// | where AdditionalExtensions has \"reason=tcp-rst-from-client\"  \n| extend reason = tostring(split(AdditionalExtensions, \";\")[3])\n| summarize StartTimeUtc = min(TimeGenerated), EndTimeUtc = max(TimeGenerated), count() by DeviceName, SourceUserID, SourceIP, ApplicationProtocol, reason, DestinationPort, Protocol, DeviceVendor, DeviceProduct, DeviceAction, DestinationIP\n| where count_ >= 10\n| summarize StartTimeUtc = min(StartTimeUtc), EndTimeUtc = max(EndTimeUtc), makeset(DestinationIP), totalcount = sum(count_) by DeviceName, SourceUserID, SourceIP, ApplicationProtocol, reason, DestinationPort, Protocol, DeviceVendor, DeviceProduct, DeviceAction\n| extend timestamp = StartTimeUtc, IPCustomEntity = SourceIP, AccountCustomEntity = SourceUserID, HostCustomEntity = DeviceName \n",
+            "queryFrequency": "1h",
+            "queryPeriod": "1h",
+            "triggerOperator": "gt",
+            "triggerThreshold": "0",
+            "suppressionDuration": "6H",
+            "suppressionEnabled": "false"
+        },
+        {
+            "displayName": "Time series anomaly detection for total volume in network logs",
+            "severity": "Medium",
+            "enabled": "true",
+            "query": "\nlet starttime = 14d;\nlet endtime = 1d;\nlet timeframe = 1h;\nlet scorethreshold = 3;\nlet TimeSeriesData = CommonSecurityLog \n| where isnotempty(DestinationIP) and isnotempty(SourceIP)\n| where TimeGenerated between (startofday(ago(starttime))..startofday(ago(endtime)))\n| project TimeGenerated,SourceIP, DestinationIP, DeviceVendor\n| make-series Total=count() on TimeGenerated from startofday(ago(starttime)) to startofday(ago(endtime)) step timeframe by DeviceVendor;\n//Filtering specific records associated with spikes as outliers\nlet TimeSeriesAlerts=TimeSeriesData\n| extend (anomalies, score, baseline) = series_decompose_anomalies(Total, scorethreshold, -1, 'linefit')\n| mv-expand Total to typeof(double), TimeGenerated to typeof(datetime), anomalies to typeof(double),score to typeof(double), baseline to typeof(long)\n| where anomalies > 0 | extend score = round(score,2)\n| project DeviceVendor,TimeGenerated, Total, baseline, anomalies, score;\n//Join anomalies with Base Data to popalate associated records for investigation - Results sorted by score in descending order \nTimeSeriesAlerts \n| join (\n    CommonSecurityLog \n| where isnotempty(DestinationIP) and isnotempty(SourceIP)\n| where TimeGenerated between (startofday(ago(starttime))..startofday(ago(endtime)))\n| summarize HourlyCount = count(), ListOfDestPorts = makelist(DestinationPort)  by SourceIP, DestinationIP,DestinationPort, DeviceVendor, bin(TimeGenerated, 1h)\n) on TimeGenerated, DeviceVendor | extend PercentTotal = round((HourlyCount / Total) * 100, 3) | sort by score desc \n| project DeviceVendor ,TimeGenerated, SourceIP, DestinationIP, ListOfDestPorts, HourlyCount, PercentTotal, Total, baseline, score, anomalies\n| extend IPCustomEntity = DestinationIP\n",
+            "queryFrequency": "1h",
+            "queryPeriod": "14d",
+            "triggerOperator": "gt",
+            "triggerThreshold": "3",
+            "suppressionDuration": "6H",
+            "suppressionEnabled": "false"
+        }
+    ]
+}

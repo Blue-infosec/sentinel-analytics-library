@@ -1,0 +1,100 @@
+{
+    "analytics": [
+        {
+            "displayName": "Anomalous sign-in location by user account and authenticating application",
+            "severity": "Medium",
+            "enabled": "true",
+            "query": "\nlet lookBack_long = 14d;\nlet lookBack_med = 7d;\nlet lookBack = 1d;\nSigninLogs\n| where TimeGenerated >= startofday(ago(lookBack_long))\n| extend locationString = strcat(tostring(LocationDetails[\"countryOrRegion\"]), \"/\", tostring(LocationDetails[\"state\"]), \"/\", tostring(LocationDetails[\"city\"]), \";\") \n| project TimeGenerated, AppDisplayName , UserPrincipalName, locationString \n// Create time series \n| make-series dLocationCount = dcount(locationString) on TimeGenerated in range(startofday(ago(lookBack_long)),now(), 1d) \nby UserPrincipalName, AppDisplayName \n// Compute best fit line for each entry \n| extend (RSquare,Slope,Variance,RVariance,Interception,LineFit)=series_fit_line(dLocationCount) \n// Chart the 3 most interesting lines  \n// A 0-value slope corresponds to an account being completely stable over time for a given Azure Active Directory application\n| where Slope > 0.3\n| top 50 by Slope desc\n| join kind = leftsemi (\nSigninLogs\n| where TimeGenerated >= startofday(ago(lookBack_med))\n| extend locationString = strcat(tostring(LocationDetails[\"countryOrRegion\"]), \"/\", tostring(LocationDetails[\"state\"]), \"/\", tostring(LocationDetails[\"city\"]), \";\") \n| project TimeGenerated, AppDisplayName , UserPrincipalName, locationString \n| make-series dLocationCount = dcount(locationString) on TimeGenerated in range(startofday(ago(lookBack_med)) ,now(), 1d) \nby UserPrincipalName, AppDisplayName \n| extend (RSquare,Slope,Variance,RVariance,Interception,LineFit)=series_fit_line(dLocationCount) \n| top 50 by Slope desc\n| where Slope > 0.3\n) on UserPrincipalName, AppDisplayName\n| join kind = leftsemi (\nSigninLogs\n| where TimeGenerated >= startofday(ago(lookBack))\n| extend locationString = strcat(tostring(LocationDetails[\"countryOrRegion\"]), \"/\", tostring(LocationDetails[\"state\"]), \"/\", tostring(LocationDetails[\"city\"]), \";\") \n| project TimeGenerated, AppDisplayName , UserPrincipalName, locationString \n| make-series dLocationCount = dcount(locationString) on TimeGenerated in range(startofday(ago(lookBack)) ,now(), 1d) \nby UserPrincipalName, AppDisplayName \n| extend (RSquare,Slope,Variance,RVariance,Interception,LineFit)=series_fit_line(dLocationCount) \n| top 50 by Slope desc\n// Higher threshold requirement on last day anomaly\n| where Slope > 5\n) on UserPrincipalName, AppDisplayName\n| extend timestamp = TimeGenerated, AccountCustomEntity = UserPrincipalName\n",
+            "queryFrequency": "1d",
+            "queryPeriod": "14d",
+            "triggerOperator": "gt",
+            "triggerThreshold": "0",
+            "suppressionDuration": "6H",
+            "suppressionEnabled": "false"
+        },
+        {
+            "displayName": "Attempt to bypass conditional access rule in Azure AD",
+            "severity": "Low",
+            "enabled": "true",
+            "query": "\nlet timeRange = ago(1d);\nSigninLogs\n| where TimeGenerated >= timeRange\n// Conditional access rule was not satisfied when == 1\n| where ConditionalAccessStatus == 1 or ConditionalAccessStatus =~ \"failure\"\n| extend OS = DeviceDetail.operatingSystem, Browser = DeviceDetail.browser \n| extend StatusCode = tostring(Status.errorCode), StatusDetails = tostring(Status.additionalDetails)\n| extend Region = tostring(LocationDetails[\"countryOrRegion\"]), State = tostring(LocationDetails[\"state\"]), City = tostring(LocationDetails[\"city\"])\n| extend ConditionalAccessPol0Name = tostring(ConditionalAccessPolicies[0].displayName)\n| extend ConditionalAccessPol1Name = tostring(ConditionalAccessPolicies[1].displayName)\n| extend ConditionalAccessPol2Name = tostring(ConditionalAccessPolicies[2].displayName)\n| summarize StartTimeUtc = min(TimeGenerated), EndTimeUtc = max(TimeGenerated) by UserPrincipalName, IPAddress, AppDisplayName, ResultDescription, StatusCode, StatusDetails, tostring(Browser), tostring(OS), Region, State, City, ConditionalAccessPol0Name, ConditionalAccessPol1Name, ConditionalAccessPol2Name\n| project StartTimeUtc, EndTimeUtc, UserPrincipalName, IPAddress, AppDisplayName, ResultDescription, StatusCode, StatusDetails, tostring(Browser), tostring(OS), Region, State, City, ConditionalAccessPol0Name, ConditionalAccessPol1Name, ConditionalAccessPol2Name\n| extend timestamp = StartTimeUtc, AccountCustomEntity = UserPrincipalName, IPCustomEntity = IPAddress\n",
+            "queryFrequency": "1d",
+            "queryPeriod": "1d",
+            "triggerOperator": "gt",
+            "triggerThreshold": "0",
+            "suppressionDuration": "6H",
+            "suppressionEnabled": "false"
+        },
+        {
+            "displayName": "Attempts to sign in to disabled accounts",
+            "severity": "Medium",
+            "enabled": "true",
+            "query": "\nlet timeframe = 1d;\nlet threshold = 3;\nSigninLogs\n| where TimeGenerated >= ago(timeframe)\n| where ResultType == \"50057\"\n| where ResultDescription =~ \"User account is disabled. The account has been disabled by an administrator.\"\n| summarize StartTimeUtc = min(TimeGenerated), EndTimeUtc = max(TimeGenerated), count(), applicationCount = dcount(AppDisplayName), \napplicationSet = makeset(AppDisplayName) by UserPrincipalName, IPAddress\n| where applicationCount >= threshold\n| extend timestamp = StartTimeUtc, AccountCustomEntity = UserPrincipalName, IPCustomEntity = IPAddress \n",
+            "queryFrequency": "1d",
+            "queryPeriod": "1d",
+            "triggerOperator": "gt",
+            "triggerThreshold": "0",
+            "suppressionDuration": "6H",
+            "suppressionEnabled": "false"
+        },
+        {
+            "displayName": "Distributed Password cracking attempts",
+            "severity": "Medium",
+            "enabled": "true",
+            "query": "\nlet timeRange = 1d;\nlet s_threshold = 30;\nlet l_threshold = 3;\nSigninLogs\n| where TimeGenerated >= ago(timeRange)\n| where OperationName =~ \"Sign-in activity\"\n// Error codes that we want to look at as they are related to the use of incorrect password.\n| where ResultType in (\"50126\", \"50053\" , \"50055\", \"50056\")\n| extend OS = DeviceDetail.operatingSystem, Browser = DeviceDetail.browser \n| extend LocationString= strcat(tostring(LocationDetails[\"countryOrRegion\"]), \"/\", tostring(LocationDetails[\"state\"]), \"/\", tostring(LocationDetails[\"city\"]))\n| summarize StartTimeUtc = min(TimeGenerated), EndTimeUtc = max(TimeGenerated), SigninCount=count(), LocationCount=dcount(LocationString) by UserPrincipalName, IPAddress, LocationString, AppDisplayName, ResultDescription, tostring(Browser), tostring(OS)\n| project StartTimeUtc, EndTimeUtc, SigninCount, LocationCount, UserPrincipalName, IPAddress, LocationString, AppDisplayName, ResultDescription, Browser, OS\n// Setting a generic threshold - Can be different for different environment\n| where SigninCount > s_threshold                                     \n// Setting a generic threshold for location  - Can be different for different environment\n| where LocationCount >= l_threshold\n| extend timestamp = StartTimeUtc, AccountCustomEntity = UserPrincipalName, IPCustomEntity = IPAddress\n",
+            "queryFrequency": "1d",
+            "queryPeriod": "1d",
+            "triggerOperator": "gt",
+            "triggerThreshold": "0",
+            "suppressionDuration": "6H",
+            "suppressionEnabled": "false"
+        },
+        {
+            "displayName": "Failed login attempts to Azure Portal",
+            "severity": "Low",
+            "enabled": "true",
+            "query": "\nlet timeRange = 1d;\nSigninLogs\n| where TimeGenerated >= ago(timeRange)\n| extend OS = DeviceDetail.operatingSystem, Browser = DeviceDetail.browser\n| extend StatusCode = tostring(Status.errorCode), StatusDetails = tostring(Status.additionalDetails)\n| extend State = tostring(LocationDetails.state), City = tostring(LocationDetails.city)\n| where AppDisplayName contains \"Azure Portal\"\n// Exclude non-failure types\n| where ResultType !in (\"0\", \"50125\", \"50140\")\n| summarize StartTimeUtc = min(TimeGenerated), EndTimeUtc = max(TimeGenerated), makeset(IPAddress), makeset(OS), makeset(Browser), makeset(City), AttemptCount = count(TimeGenerated) by UserDisplayName, UserPrincipalName, AppDisplayName, ResultType, ResultDescription, StatusCode, StatusDetails, Location, State\n| project StartTimeUtc, EndTimeUtc, UserDisplayName, UserPrincipalName, AppDisplayName, AttemptCount, DistinctIPCount = arraylength(set_IPAddress), set_IPAddress, ResultType, ResultDescription, StatusCode, StatusDetails, set_OS, set_Browser, Location, State, set_City\n| extend timestamp = StartTimeUtc, AccountCustomEntity = UserPrincipalName\n",
+            "queryFrequency": "1d",
+            "queryPeriod": "1d",
+            "triggerOperator": "gt",
+            "triggerThreshold": "0",
+            "suppressionDuration": "6H",
+            "suppressionEnabled": "false"
+        },
+        {
+            "displayName": "Sign-ins from IPs that attempt sign-ins to disabled accounts",
+            "severity": "Medium",
+            "enabled": "true",
+            "query": "\nlet lookBack = 14d;\nSigninLogs \n| where TimeGenerated >= ago(lookBack)\n| where ResultType == \"50057\" \n| where ResultDescription == \"User account is disabled. The account has been disabled by an administrator.\" \n| summarize StartTimeUtc = min(TimeGenerated), EndTimeUtc = max(TimeGenerated), disabledAccountLoginAttempts = count(), \ndisabledAccountsTargeted = dcount(UserPrincipalName), applicationsTargeted = dcount(AppDisplayName), disabledAccountSet = makeset(UserPrincipalName), \napplicationSet = makeset(AppDisplayName) by IPAddress\n| order by disabledAccountLoginAttempts desc\n| join kind= leftouter (\n    // Consider these IPs suspicious - and alert any related  successful sign-ins\n    SigninLogs\n    | where TimeGenerated >= ago(lookBack)\n    | where ResultType == 0\n    | summarize successfulAccountSigninCount = dcount(UserPrincipalName), successfulAccountSigninSet = makeset(UserPrincipalName, 15) by IPAddress\n    // Assume IPs associated with sign-ins from 100+ distinct user accounts are safe\n    | where successfulAccountSigninCount < 100\n) on IPAddress  \n// IPs from which attempts to authenticate as disabled user accounts originated, and had a non-zero success rate for some other account\n| where successfulAccountSigninCount != 0\n| project StartTimeUtc, EndTimeUtc, IPAddress, disabledAccountLoginAttempts, disabledAccountsTargeted, disabledAccountSet, applicationSet, \nsuccessfulAccountSigninCount, successfulAccountSigninSet\n| order by disabledAccountLoginAttempts\n| extend timestamp = StartTimeUtc, IPCustomEntity = IPAddress\n",
+            "queryFrequency": "1d",
+            "queryPeriod": "14d",
+            "triggerOperator": "gt",
+            "triggerThreshold": "0",
+            "suppressionDuration": "6H",
+            "suppressionEnabled": "false"
+        },
+        {
+            "displayName": "Brute force attack against Azure Portal",
+            "severity": "Medium",
+            "enabled": "true",
+            "query": "\nlet failureCountThreshold = 5;\nlet successCountThreshold = 1;\nlet timeRange = 1d;\nlet authenticationWindow = 20m;\nSigninLogs\n| where TimeGenerated >= ago(timeRange)\n| extend OS = DeviceDetail.operatingSystem, Browser = DeviceDetail.browser\n| extend StatusCode = tostring(Status.errorCode), StatusDetails = tostring(Status.additionalDetails)\n| extend State = tostring(LocationDetails.state), City = tostring(LocationDetails.city)\n| where AppDisplayName contains \"Azure Portal\"\n// Split out failure versus non-failure types\n| extend FailureOrSuccess = iff(ResultType in (\"0\", \"50125\", \"50140\"), \"Success\", \"Failure\")\n| summarize StartTimeUtc = min(TimeGenerated), EndTimeUtc = max(TimeGenerated), IPAddress = makeset(IPAddress), makeset(OS), makeset(Browser), makeset(City), \nmakeset(ResultType), FailureCount = countif(FailureOrSuccess==\"Failure\"), SuccessCount = countif(FailureOrSuccess==\"Success\") \nby bin(TimeGenerated, authenticationWindow), UserDisplayName, UserPrincipalName, AppDisplayName\n| where FailureCount >= failureCountThreshold and SuccessCount >= successCountThreshold\n| mvexpand IPAddress\n| extend IPAddress = tostring(IPAddress)\n| extend timestamp = StartTimeUtc, AccountCustomEntity = UserPrincipalName, IPCustomEntity = IPAddress \n",
+            "queryFrequency": "1d",
+            "queryPeriod": "1d",
+            "triggerOperator": "gt",
+            "triggerThreshold": "0",
+            "suppressionDuration": "6H",
+            "suppressionEnabled": "false"
+        },
+        {
+            "displayName": "Successful logon from IP and failure from a different IP",
+            "severity": "Medium",
+            "enabled": "true",
+            "query": "\nlet timeFrame = 1d;\nlet logonDiff = 10m;\nSigninLogs \n| where TimeGenerated >= ago(timeFrame) \n| where ResultType == \"0\" \n| where AppDisplayName !in (\"Office 365 Exchange Online\", \"Skype for Business Online\")\n| project SuccessLogonTime = TimeGenerated, UserPrincipalName, SuccessIPAddress = IPAddress, AppDisplayName, SuccessIPBlock = strcat(split(IPAddress, \".\")[0], \".\", split(IPAddress, \".\")[1])\n| join kind= inner (\n    SigninLogs \n    | where TimeGenerated >= ago(timeFrame) \n    | where ResultType !in (\"0\", \"50140\") \n    | where ResultDescription !~ \"Other\"  \n    | where AppDisplayName !in (\"Office 365 Exchange Online\", \"Skype for Business Online\")\n    | project FailedLogonTime = TimeGenerated, UserPrincipalName, FailedIPAddress = IPAddress, AppDisplayName, ResultType, ResultDescription\n) on UserPrincipalName, AppDisplayName \n| where SuccessLogonTime < FailedLogonTime and FailedLogonTime - SuccessLogonTime <= logonDiff and FailedIPAddress !startswith SuccessIPBlock\n| summarize FailedLogonTime = max(FailedLogonTime), SuccessLogonTime = max(SuccessLogonTime) by UserPrincipalName, SuccessIPAddress, AppDisplayName, FailedIPAddress, ResultType, ResultDescription \n| project UserPrincipalName, SuccessLogonTime, SuccessIPAddress, AppDisplayName, FailedLogonTime, FailedIPAddress, ResultType, ResultDescription\n| extend timestamp = SuccessLogonTime, AccountCustomEntity = UserPrincipalName, IPCustomEntity = SuccessIPAddress\n",
+            "queryFrequency": "1d",
+            "queryPeriod": "1d",
+            "triggerOperator": "gt",
+            "triggerThreshold": "0",
+            "suppressionDuration": "6H",
+            "suppressionEnabled": "false"
+        }
+    ]
+}

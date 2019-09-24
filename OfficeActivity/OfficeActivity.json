@@ -1,0 +1,76 @@
+{
+    "analytics": [
+        {
+            "displayName": "Exchange AuditLog disabled",
+            "severity": "Medium",
+            "enabled": "true",
+            "query": "\nlet timeframe = 1d;\nOfficeActivity\n| where TimeGenerated >= ago(timeframe)\n| where UserType in~ (\"Admin\",\"DcAdmin\") \n// Only admin or global-admin can disable audit logging\n| where Operation =~ \"Set-AdminAuditLogConfig\" \n| extend AdminAuditLogEnabledValue = tostring(parse_json(tostring(parse_json(tostring(array_slice(parse_json(Parameters),3,3)))[0])).Value)\n| where AdminAuditLogEnabledValue =~ \"False\" \n| summarize StartTimeUtc = min(TimeGenerated), EndTimeUtc = max(TimeGenerated), OperationCount = count() by Operation, UserType, UserId, ClientIP, ResultStatus, Parameters, AdminAuditLogEnabledValue\n| extend timestamp = StartTimeUtc, AccountCustomEntity = UserId, IPCustomEntity = ClientIP ",
+            "queryFrequency": "1d",
+            "queryPeriod": "1d",
+            "triggerOperator": "gt",
+            "triggerThreshold": "0",
+            "suppressionDuration": "6H",
+            "suppressionEnabled": "false"
+        },
+        {
+            "displayName": "Multiple users email forwarded to same destination",
+            "severity": "Medium",
+            "enabled": "true",
+            "query": "\nlet timeframe = 7d;\nOfficeActivity\n| where TimeGenerated >= ago(timeframe)\n| where Operation =~ \"Set-Mailbox\"\n| where Parameters contains \"ForwardingSmtpAddress\"\n| extend parsed = parse_json(Parameters)\n| extend parameterName = parsed[1].Name, fwdingDestination = tostring(parsed[1].Value)\n| where isnotempty(fwdingDestination)\n| summarize TimeGenerated=max(TimeGenerated) by UserId, ClientIP, fwdingDestination\n| summarize TimeGenerated=max(TimeGenerated), userCount = dcount(UserId), UserId = makelist(UserId), ClientIP = makeset(ClientIP) by fwdingDestination\n| where userCount > 1\n| mvexpand UserId, ClientIP\n| extend UserId = tostring(UserId), ClientIP = tostring(ClientIP)\n| extend timestamp = TimeGenerated, AccountCustomEntity = UserId, IPCustomEntity = ClientIP \n",
+            "queryFrequency": "1d",
+            "queryPeriod": "7d",
+            "triggerOperator": "gt",
+            "triggerThreshold": "0",
+            "suppressionDuration": "6H",
+            "suppressionEnabled": "false"
+        },
+        {
+            "displayName": "Office policy tampering",
+            "severity": "Medium",
+            "enabled": "true",
+            "query": "\nlet timeframe = 1d;\nOfficeActivity\n| where TimeGenerated >= ago(timeframe)\n| where RecordType =~ \"ExchangeAdmin\"\n| where UserType in~ (\"Admin\",\"DcAdmin\") \n// Only admin or global-admin can disable/remove policy\n| where Operation startswith \"Remove-\" or Operation startswith \"Disable-\"\n| where Operation contains \"AntiPhish\" or Operation contains \"SafeAttachment\" \n  or Operation contains \"SafeLinks\" or Operation contains \"Dlp\" or Operation contains \"Audit\"\n| summarize StartTimeUtc = min(TimeGenerated), EndTimeUtc = max(TimeGenerated), OperationCount = count() by Operation, UserType, UserId, ClientIP, ResultStatus, Parameters\n| extend timestamp = StartTimeUtc, AccountCustomEntity = UserId, IPCustomEntity = ClientIP",
+            "queryFrequency": "1d",
+            "queryPeriod": "1d",
+            "triggerOperator": "gt",
+            "triggerThreshold": "0",
+            "suppressionDuration": "6H",
+            "suppressionEnabled": "false"
+        },
+        {
+            "displayName": "Rare and potentially high-risk Office operations",
+            "severity": "Low",
+            "enabled": "true",
+            "query": "\nlet timeframe = 1d;\nOfficeActivity\n| where TimeGenerated >= ago(timeframe)\n| where Operation in~ ( \"AddMailbox-Permission\", \"Add-MailboxFolderPermission\", \"Set-Mailbox\", \"New-ManagementRoleAssignment\")\n| extend timestamp = TimeGenerated, AccountCustomEntity = UserId, IPCustomIdentity = ClientIP\n",
+            "queryFrequency": "1d",
+            "queryPeriod": "1d",
+            "triggerOperator": "gt",
+            "triggerThreshold": "0",
+            "suppressionDuration": "6H",
+            "suppressionEnabled": "false"
+        },
+        {
+            "displayName": "SharePointFileOperation via previously unseen IPs",
+            "severity": "Medium",
+            "enabled": "true",
+            "query": "\nlet threshold = 100;\nlet szSharePointFileOperation = \"SharePointFileOperation\";\nlet szOperations = dynamic([\"FileDownloaded\", \"FileUploaded\"]);\nlet historicalActivity =\nOfficeActivity\n| where TimeGenerated between(ago(14d)..ago(1d))\n| where RecordType =~ szSharePointFileOperation\n| where Operation in~ (szOperations)\n| summarize historicalCount = count() by ClientIP;\nlet recentActivity = OfficeActivity\n| where TimeGenerated > ago(1d)\n| where RecordType =~ szSharePointFileOperation\n| where Operation in~ (szOperations)\n| summarize recentCount = count() by ClientIP;\nrecentActivity | join kind= leftanti ( historicalActivity ) on ClientIP\n// More than 100 downloads/uploads from a new IP\n| where recentCount > threshold\n| join kind = rightsemi \n(OfficeActivity \n| where TimeGenerated >= ago(1d) \n| where RecordType =~ szSharePointFileOperation\n| where Operation in~ (szOperations)\n)\non ClientIP\n| summarize StartTimeUtc = min(TimeGenerated), EndTimeUtc = max(TimeGenerated), count() by RecordType, Operation, UserType, UserId, ClientIP, OfficeWorkload, Site_Url\n| extend timestamp = StartTimeUtc, AccountCustomEntity = UserId, IPCustomEntity = ClientIP \n| order by Operation, UserId asc\n",
+            "queryFrequency": "1d",
+            "queryPeriod": "14d",
+            "triggerOperator": "gt",
+            "triggerThreshold": "0",
+            "suppressionDuration": "6H",
+            "suppressionEnabled": "false"
+        },
+        {
+            "displayName": "SharePointFileOperation via devices with previously unseen user agents",
+            "severity": "Medium",
+            "enabled": "true",
+            "query": "\nlet threshold = 10;\nlet szSharePointFileOperation = \"SharePointFileOperation\";\nlet szOperations = dynamic([\"FileDownloaded\", \"FileUploaded\"]);\nlet historicalActivity =\nOfficeActivity\n| where TimeGenerated between(ago(14d)..ago(1d))\n| where RecordType =~ szSharePointFileOperation\n| where Operation in~ (szOperations)\n| summarize historicalCount = count() by UserAgent;\nlet recentActivity = OfficeActivity\n| where RecordType =~ szSharePointFileOperation\n| where Operation in~ (szOperations)\n| where TimeGenerated > ago(1d)\n| summarize recentCount = count() by UserAgent;\nrecentActivity | join kind = leftanti (historicalActivity) on UserAgent\n| project RecordType = szSharePointFileOperation, UserAgent, recentCount\n| order by recentCount asc, UserAgent\n// More than 10 downloads/uploads from a new user agent\n| where recentCount > threshold\n| join kind = rightsemi \n(OfficeActivity \n| where TimeGenerated >= ago(1d) \n| where RecordType =~ szSharePointFileOperation \n| where Operation in~ (szOperations)\n)\non UserAgent\n| summarize StartTimeUtc = min(TimeGenerated), EndTimeUtc = max(TimeGenerated), count() by RecordType, Operation, UserAgent, UserType, UserId, ClientIP, OfficeWorkload, Site_Url\n| extend timestamp = StartTimeUtc, AccountCustomEntity = UserId, IPCustomEntity = ClientIP\n| order by UserAgent asc, Operation asc, UserId asc\n",
+            "queryFrequency": "1d",
+            "queryPeriod": "14d",
+            "triggerOperator": "gt",
+            "triggerThreshold": "0",
+            "suppressionDuration": "6H",
+            "suppressionEnabled": "false"
+        }
+    ]
+}

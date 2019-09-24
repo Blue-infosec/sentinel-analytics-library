@@ -1,0 +1,148 @@
+{
+    "analytics": [
+        {
+            "displayName": "Failed AzureAD logons but success logon to AWS Console",
+            "severity": "Medium",
+            "enabled": "true",
+            "query": "\n//Adjust this threshold to fit your environment\nlet signin_threshold = 5; \n//Make a list of IPs with AAD signin failures above our threshold\nlet suspicious_signins = \nSigninLogs\n| where TimeGenerated >= ago(1d)\n| where ResultType !in (\"0\", \"50125\", \"50140\")\n| where IPAddress != \"127.0.0.1\"\n| summarize count() by IPAddress\n| where count_ >  signin_threshold\n| summarize makelist(IPAddress);\n//See if any of those IPs have sucessfully logged into the AWS console\nAWSCloudTrail\n| where TimeGenerated > ago(1d)\n| where EventName == \"ConsoleLogin\"\n| extend LoginResult = tostring(parse_json(ResponseElements).ConsoleLogin) \n| where LoginResult == \"Success\"\n| where SourceIpAddress in (suspicious_signins)\n| extend Reason = \"Multiple failed AAD logins from IP address\"\n| extend MFAUsed = tostring(parse_json(AdditionalEventData).MFAUsed)\n| extend User = iif(UserIdentityUserName == \"\", UserIdentityType, UserIdentityUserName) \n| project TimeGenerated, Reason, LoginResult, EventTypeName, UserIdentityType, User, AWSRegion, SourceIpAddress, UserAgent, MFAUsed\n| extend timestamp = TimeGenerated, AccountCustomEntity = User, IPCustomEntity = SourceIpAddress\n",
+            "queryFrequency": "1d",
+            "queryPeriod": "1d",
+            "triggerOperator": "gt",
+            "triggerThreshold": "0",
+            "suppressionDuration": "6H",
+            "suppressionEnabled": "false"
+        },
+        {
+            "displayName": "Failed AzureAD logons but success logon to host",
+            "severity": "Medium",
+            "enabled": "true",
+            "query": "\n//Adjust this threshold to fit the environment\nlet signin_threshold = 5;\n//Make a list of all IPs with failed signins to AAD above our threshold\nlet suspicious_signins =\nSigninLogs\n| where TimeGenerated >= ago(1d)\n| where ResultType !in (\"0\", \"50125\", \"50140\")\n| where IPAddress != \"127.0.0.1\"\n| summarize count() by IPAddress\n| where count_ > signin_threshold\n| summarize makelist(IPAddress);\n//See if any of these IPs have sucessfull logged into *nix hosts\nlet linux_logons =\nSyslog\n| where TimeGenerated >= ago(1d)\n| where Facility contains \"auth\" and ProcessName != \"sudo\"\n| where SyslogMessage has \"Accepted\"\n| extend SourceIP = extract(\"(([0-9]{1,3})\\\\.([0-9]{1,3})\\\\.([0-9]{1,3})\\\\.(([0-9]{1,3})))\",1,SyslogMessage)\n| where SourceIP in (suspicious_signins)\n| extend Reason = \"Multiple failed AAD logins from IP address\"\n| project TimeGenerated, Computer, HostIP, IpAddress = SourceIP, SyslogMessage, Facility, ProcessName, Reason;\n//See if any of these IPs have sucessfull logged into Windows hosts\nlet win_logons =\nSecurityEvent\n| where TimeGenerated >= ago(1d)\n| where EventID == 4624\n| where LogonType == 10 or LogonType == 7 or LogonType == 3\n| where IpAddress != \"-\"\n| where IpAddress in (suspicious_signins)\n| extend Reason = \"Multiple failed AAD logins from IP address\"\n| project TimeGenerated, Account, AccountType, Computer, Activity, EventID, LogonProcessName, IpAddress, LogonTypeName, TargetUserSid, Reason;\nunion isfuzzy=true linux_logons,win_logons\n| extend timestamp = TimeGenerated, AccountCustomEntity = Account, IPCustomEntity = IpAddress, HostCustomEntity = Computer\n",
+            "queryFrequency": "1d",
+            "queryPeriod": "1d",
+            "triggerOperator": "gt",
+            "triggerThreshold": "0",
+            "suppressionDuration": "6H",
+            "suppressionEnabled": "false"
+        },
+        {
+            "displayName": "IP with multiple failed Azure AD logins successfully logs in to Palo Alto VPN",
+            "severity": "Medium",
+            "enabled": "true",
+            "query": "let timeframe = 1d;\n//Set a threshold of failed AAD signins from an IP address within 1 day above which we want to deem those logins suspicious.\nlet signin_threshold = 5; \n//Make a list of IPs with AAD signin failures above our threshold.\nlet suspicious_signins = \n    SigninLogs\n    | where TimeGenerated >= ago(timeframe)\n    //Looking for logon failure results\n    | where ResultType !in (\"0\", \"50125\", \"50140\")\n    //Exclude localhost addresses to reduce the chance of FPs\n    | where IPAddress != \"127.0.0.1\"\n    | summarize count() by IPAddress\n    | where count_ >  signin_threshold\n    | summarize makelist(IPAddress);\n//See if any of those IPs have sucessfully logged into PA VPNs during the same timeperiod\nCommonSecurityLog\n    | where TimeGenerated > ago(timeframe)\n    //Select only PA VPN sucessful logons\n    | where DeviceVendor == \"Palo Alto Networks\" and DeviceEventClassID == \"globalprotect\"\n    | where Message has \"GlobalProtect gateway user authentication succeeded\"\n    //Parse out the logon source IP from the Message field to match on\n    | extend SourceIP = extract(\"Login from: ([^,]+)\", 1, Message) \n    | where SourceIP in (suspicious_signins)\n    | extend Reason = \"Multiple failed AAD logins from SourceIP\"\n    //Parse out other useful information from Message field\n    | extend User = extract(\"User name: ([^,]+)\", 1, Message) \n    | extend ClientOS = extract(\"Client OS version: ([^,\\\"]+)\", 1, Message)\n    | extend Location = extract(\"Source region: ([^,]{2})\",1, Message)\n    | project TimeGenerated, Reason, SourceIP, User, ClientOS, Location, Message, DeviceName, ReceiptTime, DeviceVendor, DeviceEventClassID, Computer, FileName\n    | extend AccountCustomEntity = User, IPCustomEntity = SourceIP, timestamp = TimeGenerated, HostCustomEntity = DeviceName \n",
+            "queryFrequency": "1d",
+            "queryPeriod": "1d",
+            "triggerOperator": "gt",
+            "triggerThreshold": "0",
+            "suppressionDuration": "6H",
+            "suppressionEnabled": "false"
+        },
+        {
+            "displayName": "Failed AWS Console logons but success logon to AzureAD",
+            "severity": "Medium",
+            "enabled": "true",
+            "query": "\n//Adjust this threshold to fit environment\nlet  signin_threshold = 5; \n//Make a list of IPs with failed AWS console logins\nlet aws_fails = AWSCloudTrail\n| where TimeGenerated >= ago(1d)\n| where EventName == \"ConsoleLogin\"\n| extend LoginResult = tostring(parse_json(ResponseElements).ConsoleLogin) \n| where LoginResult == \"Success\"\n| where SourceIpAddress != \"127.0.0.1\"\n| summarize count() by SourceIpAddress\n| where count_ >  signin_threshold\n| summarize makelist(SourceIpAddress);\n//See if any of those IPs have sucessfully logged into Azure AD.\nSigninLogs\n| where TimeGenerated >= ago(1d)\n| where ResultType !in (\"0\", \"50125\", \"50140\")\n| where IPAddress in (aws_fails) \n| extend Reason = \"Multiple failed AWS Console logins from IP address\"\n| extend timestamp = TimeGenerated, AccountCustomEntity = UserPrincipalName, IPCustomEntity = IPAddress\n",
+            "queryFrequency": "1d",
+            "queryPeriod": "1d",
+            "triggerOperator": "gt",
+            "triggerThreshold": "0",
+            "suppressionDuration": "6H",
+            "suppressionEnabled": "false"
+        },
+        {
+            "displayName": "Failed host logons but success logon to AzureAD",
+            "severity": "Medium",
+            "enabled": "true",
+            "query": "\n//Adjust this threshold to fit environment\nlet signin_threshold = 5; \n//Make a list of IPs with failed Windows host logins above threshold\nlet win_fails = \nSecurityEvent\n| where TimeGenerated >= ago(1d)\n| where EventID == 4625\n| where LogonType == 10 or LogonType == 7 or LogonType == 3\n| where IpAddress != \"-\"\n| summarize count() by IpAddress\n| where count_ > signin_threshold\n| summarize makelist(IpAddress);\n//Make a list of IPs with failed *nix host logins above threshold\nlet nix_fails = \nSyslog\n| where TimeGenerated > ago(1d)\n| where Facility contains 'auth' and ProcessName != 'sudo'\n| extend SourceIP = extract(\"(([0-9]{1,3})\\\\.([0-9]{1,3})\\\\.([0-9]{1,3})\\\\.(([0-9]{1,3})))\",1,SyslogMessage)\n| where SourceIP != \"\" and SourceIP != \"127.0.0.1\"\n| summarize count() by SourceIP\n| where count_ > signin_threshold\n| summarize makelist(SourceIP);\n//See if any of the IPs with failed host logins hve had a sucessful Azure AD login\nSigninLogs\n| where TimeGenerated > ago(1d)\n| where ResultType !in (\"0\", \"50125\", \"50140\")\n| where IPAddress in (win_fails) or IPAddress in (nix_fails)\n| extend Reason=  \"Multiple failed host logins from IP address\"\n| extend timstamp = TimeGenerated, AccountCustomEntity = UserPrincipalName, IPCustomEntity = IPAddress\n",
+            "queryFrequency": "1d",
+            "queryPeriod": "1d",
+            "triggerOperator": "gt",
+            "triggerThreshold": "0",
+            "suppressionDuration": "6H",
+            "suppressionEnabled": "false"
+        },
+        {
+            "displayName": "Malformed user agent",
+            "severity": "Medium",
+            "enabled": "true",
+            "query": "\nlet endtime = 1d;\n(union isfuzzy=true\n(OfficeActivity | where TimeGenerated >= ago(endtime) | where UserAgent != \"\"),\n(OfficeActivity\n| where TimeGenerated >= ago(endtime)\n| where RecordType in (\"AzureActiveDirectoryAccountLogon\", \"AzureActiveDirectoryStsLogon\")\n| extend OperationName = Operation, UserAgent = extractjson(\"$[0].Value\", ExtendedProperties, typeof(string))),\n(AzureDiagnostics\n| where TimeGenerated >= ago(endtime)\n| where ResourceType == \"APPLICATIONGATEWAYS\" \n| where OperationName == \"ApplicationGatewayAccess\" \n| extend ClientIP = CallerIpAddress, UserAgent = replace(@'\\+', @' ', userAgent_s)))\n// Likely artefact of hardcoding\n| where UserAgent startswith \"User\" or UserAgent startswith \"\\\"\"\n// Incorrect casing\nor (UserAgent startswith \"Mozilla\" and not(UserAgent containscs \"Mozilla\"))\n// Incorrect casing\nor UserAgent containscs  \"(Compatible;\"\n// Missing MSIE version\nor UserAgent matches regex @\"MSIE\\s?;\"\n// Incorrect spacing around MSIE version\nor UserAgent matches regex  @\"MSIE(?:\\d|.{1,5}?\\d\\s;)\"\n| summarize by TimeGenerated, UserId, ClientIP, UserAgent, OperationName, RecordType\n| extend timestamp = TimeGenerated, IPCustomEntity = ClientIP, AccountCustomEntity = UserId\n",
+            "queryFrequency": "1d",
+            "queryPeriod": "1d",
+            "triggerOperator": "gt",
+            "triggerThreshold": "0",
+            "suppressionDuration": "6H",
+            "suppressionEnabled": "false"
+        },
+        {
+            "displayName": "Network endpoint to host executable correlation",
+            "severity": "Medium",
+            "enabled": "true",
+            "query": "\nlet timeframe = 1d;\nlet endpointData = \n(SecurityEvent\n  | where TimeGenerated >= ago(timeframe) \n  | where EventID == 4688\n  | extend shortFileName = tostring(split(NewProcessName, '\\\\')[-1])\n  );\n// Correlate suspect executables seen in TrendMicro rule updates with similar activity on endpoints\nCommonSecurityLog \u00e2\u20ac\u2039\n| where TimeGenerated >= ago(timeframe)\u00e2\u20ac\u2039\n| where DeviceVendor == \"Trend Micro\" \u00e2\u20ac\u2039\n| where Activity == \"Deny List updated\" \n| where RequestURL endswith \".exe\" \u00e2\u20ac\u2039\n| project TimeGenerated, Activity , RequestURL , SourceIP, DestinationIP \u00e2\u20ac\u2039\n| extend suspectExeName = tolower(tostring(split(RequestURL, '/')[-1]))\u00e2\u20ac\u2039\u00e2\u20ac\u2039\n| join (endpointData)\u00e2\u20ac\u2039 on $left.suspectExeName == $right.shortFileName \n| extend timestamp = TimeGenerated, IPCustomEntity = DestinationIP, AccountCustomEntity = TargetUserName, HostCustomEntity = Computer\n",
+            "queryFrequency": "1d",
+            "queryPeriod": "1d",
+            "triggerOperator": "gt",
+            "triggerThreshold": "0",
+            "suppressionDuration": "6H",
+            "suppressionEnabled": "false"
+        },
+        {
+            "displayName": "New UserAgent observed in last 24 hours",
+            "severity": "Low",
+            "enabled": "true",
+            "query": "\nlet starttime = 14d;\nlet endtime = 1d;\nlet UserAgentAll =\n(union isfuzzy=true\n(OfficeActivity\n| where TimeGenerated >= ago(starttime) \n| extend UserAgent = extractjson(\"$[0].Value\", ExtendedProperties, typeof(string))\n| summarize StartTimeUtc = min(TimeGenerated), EndTimeUtc = max(TimeGenerated) by SourceIP = ClientIP, Account = UserId, Type\n),\n(\nAzureDiagnostics\n| where TimeGenerated >= ago(starttime) \n| extend UserAgent = replace(@'\\+', @' ', userAgent_s)\n| where isnotempty(UserAgent)\n| parse msg_s with * 'HTTPS request from' SourceIP ':' * \n| where isnotempty(SourceIP)\n| summarize StartTimeUtc = min(TimeGenerated), EndTimeUtc = max(TimeGenerated) by UserAgent, SourceIP, Type\n),\n(\nW3CIISLog\n| where TimeGenerated >= ago(starttime) \n| summarize StartTimeUtc = min(TimeGenerated), EndTimeUtc = max(TimeGenerated) by UserAgent = csUserAgent, SourceIP = cIP, Account = csUserName, Type\n),\n(\nAWSCloudTrail\n| where TimeGenerated >= ago(starttime) \n| summarize StartTimeUtc = min(TimeGenerated), EndTimeUtc = max(TimeGenerated) by UserAgent, SourceIP = SourceIpAddress, Account = UserIdentityUserName, Type\n));\nUserAgentAll\n| where StartTimeUtc < ago(endtime)\n| summarize IP = dcount(SourceIP) by tostring(UserAgent), Account, Type\n| join kind=rightanti\n(\nUserAgentAll\n| where StartTimeUtc >= ago(endtime) \n| summarize StartTimeUtc = min(StartTimeUtc), EndTimeUtc = max(EndTimeUtc), IP = dcount(SourceIP) by tostring(UserAgent), SourceIP, Account, Type\n) on UserAgent, Account, Type\n//| project UserAgent, SourceIP\n| extend timestamp = StartTimeUtc, IPCustomEntity = SourceIP, AccountCustomEntity = Account\n",
+            "queryFrequency": "1d",
+            "queryPeriod": "14d",
+            "triggerOperator": "gt",
+            "triggerThreshold": "0",
+            "suppressionDuration": "6H",
+            "suppressionEnabled": "false"
+        },
+        {
+            "displayName": "Known Phosphorus group domains",
+            "severity": "High",
+            "enabled": "true",
+            "query": "\nlet timeframe = 1d;\nlet DomainNames = dynamic([\"yahoo-verification.org\",\"support-servics.com\",\"verification-live.com\",\"com-mailbox.com\",\"com-myaccuants.com\",\"notification-accountservice.com\",\n\"accounts-web-mail.com\",\"customer-certificate.com\",\"session-users-activities.com\",\"user-profile-credentials.com\",\"verify-linke.com\",\"support-servics.net\",\"verify-linkedin.net\", \n\"yahoo-verification.net\",\"yahoo-verify.net\",\"outlook-verify.net\",\"com-users.net\",\"verifiy-account.net\",\"te1egram.net\",\"account-verifiy.net\",\"myaccount-services.net\",\n\"com-identifier-servicelog.name\",\"microsoft-update.bid\",\"outlook-livecom.bid\",\"update-microsoft.bid\",\"documentsfilesharing.cloud\",\"com-microsoftonline.club\",\n\"confirm-session-identifier.info\",\"session-management.info\",\"confirmation-service.info\",\"document-share.info\",\"broadcast-news.info\",\"customize-identity.info\",\"webemail.info\",\n\"com-identifier-servicelog.info\",\"documentsharing.info\",\"notification-accountservice.info\",\"identifier-activities.info\",\"documentofficupdate.info\",\"recoveryusercustomer.info\",\n\"serverbroadcast.info\",\"account-profile-users.info\",\"account-service-management.info\",\"accounts-manager.info\",\"activity-confirmation-service.info\",\"com-accountidentifier.info\",\n\"com-privacy-help.info\",\"com-sessionidentifier.info\",\"com-useraccount.info\",\"confirmation-users-service.info\",\"confirm-identity.info\",\"confirm-session-identification.info\",\n\"continue-session-identifier.info\",\"customer-recovery.info\",\"customers-activities.info\",\"elitemaildelivery.info\",\"email-delivery.info\",\"identify-user-session.info\",\n\"message-serviceprovider.info\",\"notificationapp.info\",\"notification-manager.info\",\"recognized-activity.info\",\"recover-customers-service.info\",\"recovery-session-change.info\",\n\"service-recovery-session.info\",\"service-session-continue.info\",\"session-mail-customers.info\",\"session-managment.info\",\"session-verify-user.info\",\"shop-sellwear.info\",\n\"supportmailservice.info\",\"terms-service-notification.info\",\"user-activity-issues.info\",\"useridentity-confirm.info\",\"users-issue-services.info\",\"verify-user-session.info\",\n\"login-gov.info\",\"notification-signal-agnecy.info\",\"notifications-center.info\",\"identifier-services-sessions.info\",\"customers-manager.info\",\"session-manager.info\",\n\"customer-managers.info\",\"confirmation-recovery-options.info\",\"service-session-confirm.info\",\"session-recovery-options.info\",\"services-session-confirmation.info\",\n\"notification-managers.info\",\"activities-services-notification.info\",\"activities-recovery-options.info\",\"activity-session-recovery.info\",\"customers-services.info\",\n\"sessions-notification.info\",\"download-teamspeak.info\",\"services-issue-notification.info\",\"microsoft-upgrade.mobi\",\"broadcastnews.pro\",\"mobile-messengerplus.network\"]);\n(union isfuzzy=true\n(CommonSecurityLog \n| where TimeGenerated >= ago(timeframe) \n| parse Message with * '(' DNSName ')' * \n| extend Account = SourceUserID, Host = DeviceName, IPAddress = SourceIP),\n(DnsEvents \n| where TimeGenerated >= ago(timeframe) \n| extend IPAddress = ClientIP, DNSName = Name, Host = Computer),\n(VMConnection \n| where TimeGenerated >= ago(timeframe) \n| parse RemoteDnsCanonicalNames with * '[\"' DNSName '\"]' *\n| extend IPAddress = RemoteIp, Host = Computer)\n)\n| where isnotempty(DNSName)\n| where DNSName  in~ (DomainNames)\n| extend timestamp = TimeGenerated, IPCustomEntity = IPAddress, AccountCustomEntity = Account, HostCustomEntity = Host\n",
+            "queryFrequency": "1d",
+            "queryPeriod": "1d",
+            "triggerOperator": "gt",
+            "triggerThreshold": "0",
+            "suppressionDuration": "6H",
+            "suppressionEnabled": "false"
+        },
+        {
+            "displayName": "Cisco - firewall block but success logon to Azure AD",
+            "severity": "Medium",
+            "enabled": "true",
+            "query": "\nlet PrivateIPregex = @'^127\\.|^10\\.|^172\\.1[6-9]\\.|^172\\.2[0-9]\\.|^172\\.3[0-1]\\.|^192\\.168\\.';\nlet endtime = 1d;\nCommonSecurityLog\n| where TimeGenerated >= ago(endtime) \n| where DeviceVendor =~ \"Cisco\"\n| where DeviceAction =~ \"denied\"\n| extend SourceIPType = iff(SourceIP matches regex PrivateIPregex,\"private\" ,\"public\" )\n| where SourceIPType == \"public\"\n| summarize count() by SourceIP\n| join (\n    // Successful signins from IPs blocked by the firewall solution are suspect\n    // Include fully successful sign-ins, but also ones that failed only at MFA stage\n    // as that supposes the password was sucessfully guessed.\n  SigninLogs\n  | where ResultType in (\"0\", \"50574\", \"50576\") \n) on $left.SourceIP == $right.IPAddress\n| extend timestamp = TimeGenerated, IPCustomEntity = SourceIP, AccountCustomEntity = UserPrincipalName\n",
+            "queryFrequency": "1d",
+            "queryPeriod": "1d",
+            "triggerOperator": "gt",
+            "triggerThreshold": "0",
+            "suppressionDuration": "6H",
+            "suppressionEnabled": "false"
+        },
+        {
+            "displayName": "Known Strontium group domains",
+            "severity": "High",
+            "enabled": "true",
+            "query": "\nlet timeframe = 1d;\nlet DomainNames = dynamic([\"irf.services\",\"microsoft-onthehub.com\",\"msofficelab.com\",\"com-mailbox.com\",\"my-sharefile.com\",\"my-sharepoints.com\",\n\"accounts-web-mail.com\",\"customer-certificate.com\",\"session-users-activities.com\",\"user-profile-credentials.com\",\"verify-linke.com\",\"support-servics.net\",\n\"onedrive-sharedfile.com\",\"onedrv-live.com\",\"transparencyinternational-my-sharepoint.com\",\"transparencyinternational-my-sharepoints.com\",\"soros-my-sharepoint.com\"]);\n(union isfuzzy=true\n(CommonSecurityLog \n| where TimeGenerated >= ago(timeframe) \n| parse Message with * '(' DNSName ')' * \n| extend Account = SourceUserID, Host = DeviceName, IPAddress = SourceIP),\n(DnsEvents \n| where TimeGenerated >= ago(timeframe) \n| extend IPAddress = ClientIP, DNSName = Name, Host = Computer),\n(VMConnection \n| where TimeGenerated >= ago(timeframe) \n| parse RemoteDnsCanonicalNames with * '[\"' DNSName '\"]' *\n| extend IPAddress = RemoteIp, Host = Computer)\n)\n| where isnotempty(DNSName)\n| where DNSName  in~ (DomainNames)\n| extend timestamp = TimeGenerated, IPCustomEntity = IPAddress, AccountCustomEntity = Account, HostCustomEntity = Host",
+            "queryFrequency": "1d",
+            "queryPeriod": "1d",
+            "triggerOperator": "gt",
+            "triggerThreshold": "0",
+            "suppressionDuration": "6H",
+            "suppressionEnabled": "false"
+        },
+        {
+            "displayName": "Anomaly with data size transferred to public internet",
+            "severity": "Medium",
+            "enabled": "true",
+            "query": "\nlet starttime = 14d;\nlet endtime = 1d;\nlet timeframe = 1h;\nlet scorethreshold = 3;\nlet PrivateIPregex = @'^127\\.|^10\\.|^172\\.1[6-9]\\.|^172\\.2[0-9]\\.|^172\\.3[0-1]\\.|^192\\.168\\.';\nlet TimeSeriesData = (union isfuzzy=true\n(\nVMConnection\n| where TimeGenerated between (startofday(ago(starttime))..startofday(ago(endtime)))\n| where isnotempty(DestinationIP) and isnotempty(SourceIP)\n| extend DestinationIpType = iff(DestinationIp matches regex PrivateIPregex,\"private\" ,\"public\" )\n| where DestinationIpType == \"public\" | extend DeviceVendor = \"VMConnection\"\n| project TimeGenerated, BytesSent, DeviceVendor\n| make-series TotalBytesSent=sum(BytesSent) on TimeGenerated from startofday(ago(starttime)) to startofday(ago(endtime)) step timeframe by DeviceVendor\n),\n(\nCommonSecurityLog \n| where TimeGenerated between (startofday(ago(starttime))..startofday(ago(endtime)))\n| where isnotempty(DestinationIP) and isnotempty(SourceIP)\n| extend DestinationIpType = iff(DestinationIP matches regex PrivateIPregex,\"private\" ,\"public\" )\n| where DestinationIpType == \"public\"\n| project TimeGenerated, SentBytes, DeviceVendor\n| make-series TotalBytesSent=sum(SentBytes) on TimeGenerated from startofday(ago(starttime)) to startofday(ago(endtime)) step timeframe by DeviceVendor\n)\n);\n//Filter anomolies against TimeSeriesData\nlet TimeSeriesAlerts = TimeSeriesData\n| extend (anomalies, score, baseline) = series_decompose_anomalies(TotalBytesSent, scorethreshold, -1, 'linefit')\n| mv-expand TotalBytesSent to typeof(double), TimeGenerated to typeof(datetime), anomalies to typeof(double),score to typeof(double), baseline to typeof(long)\n| where anomalies > 0 | extend AnomalyTimeattheHour = TimeGenerated \n| extend TotalBytesSentinMBperHour = round(((TotalBytesSent / 1024)/1024),2), baselinebytessentperHour = round(((baseline / 1024)/1024),2), score = round(score,2)\n| project DeviceVendor, AnomalyTimeattheHour, TimeGenerated, TotalBytesSentinMBperHour, baselinebytessentperHour, anomalies, score;\n//Union of all BaseLogs aggregated per hour\nlet BaseLogs = (union isfuzzy=true\n(\nCommonSecurityLog \n| where isnotempty(DestinationIP) and isnotempty(SourceIP)\n| where TimeGenerated between (startofday(ago(starttime))..startofday(ago(endtime))) \n| extend SentBytesinMB = ((SentBytes / 1024)/1024), ReceivedBytesinMB = ((ReceivedBytes / 1024)/1024) \n| summarize HourlyCount = count(), ListOfDestPorts = make_set(DestinationPort), TotalSentBytesinMB = sum(SentBytesinMB), TotalReceivedBytesinMB = sum(ReceivedBytesinMB) by SourceIP, DestinationIP, DeviceVendor, bin(TimeGenerated,1h)\n| project DeviceVendor, TimeGenerated, SourceIP, DestinationIP, ListOfDestPorts, TotalSentBytesinMB, TotalReceivedBytesinMB \n),\n(\nVMConnection \n| where isnotempty(DestinationIp) and isnotempty(SourceIp)\n| where TimeGenerated between (startofday(ago(starttime))..startofday(ago(endtime))) \n| extend DeviceVendor = \"VMConnection\", SourceIP = SourceIp, DestinationIP = DestinationIp\n| extend SentBytesinMB = ((BytesSent / 1024)/1024), ReceivedBytesinMB = ((BytesReceived / 1024)/1024)\n| summarize HourlyCount = count(), ListOfDestPorts = make_set(DestinationPort), TotalSentBytesinMB = sum(SentBytesinMB),TotalReceivedBytesinMB = sum(ReceivedBytesinMB) by SourceIP, DestinationIP, DeviceVendor, bin(TimeGenerated,1h)\n| project DeviceVendor, TimeGenerated, SourceIP, DestinationIP, ListOfDestPorts, TotalSentBytesinMB, TotalReceivedBytesinMB \n)\n);\n// Join against base logs to retrive records associated with the hour of anomoly\nTimeSeriesAlerts\n| join (\n    BaseLogs \n) on DeviceVendor, TimeGenerated | sort by score desc \n| project DeviceVendor, AnomalyTimeattheHour, SourceIP, DestinationIP, ListOfDestPorts, TotalSentBytesinMB, TotalReceivedBytesinMB, TotalBytesSentinMBperHour, baselinebytessentperHour, score, anomalies \n| order by score desc, TotalSentBytesinMB desc\n| extend IPCustomEntity = DestinationIP",
+            "queryFrequency": "1h",
+            "queryPeriod": "14d",
+            "triggerOperator": "gt",
+            "triggerThreshold": "3",
+            "suppressionDuration": "6H",
+            "suppressionEnabled": "false"
+        }
+    ]
+}

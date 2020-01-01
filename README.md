@@ -1,4 +1,4 @@
-[![Maintenance](https://img.shields.io/maintenance/yes/2019.svg?style=flat-square)]()
+[![Maintenance](https://img.shields.io/maintenance/yes/2020.svg?style=flat-square)]()
 [![GitHub last commit](https://img.shields.io/github/last-commit/netevert/sentinel-analytics-library.svg?style=flat-square)](https://github.com/netevert/sentinel-analytics-library/commit/master)
 ![Total rules](https://img.shields.io/badge/Total%20rules-217-success?style=flat-square)
 [![Twitter Follow](https://img.shields.io/twitter/follow/netevert.svg?style=social)](https://twitter.com/netevert)
